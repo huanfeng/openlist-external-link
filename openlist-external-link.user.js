@@ -538,10 +538,34 @@
         }
     }
 
+    // 检查是否为 OpenList 页面
+    function isOpenListPage() {
+        // 方法1: 检查 meta 标签
+        const metaGenerator = document.querySelector('meta[name="generator"]');
+        if (metaGenerator && metaGenerator.content === 'OpenList') {
+            return true;
+        }
+
+        // 方法2: 检查页面特征元素（备用）
+        if (document.querySelector('.list-item') && document.querySelector('.solid-contextmenu')) {
+            return true;
+        }
+
+        return false;
+    }
+
     // 主程序
     function init() {
         logger.init('[OpenList外网链接] 脚本开始初始化...');
         logger.init('[OpenList外网链接] 当前URL:', window.location.href);
+
+        // 检查是否为 OpenList 页面
+        if (!isOpenListPage()) {
+            logger.init('[OpenList外网链接] 非 OpenList 页面，脚本不加载');
+            return;
+        }
+
+        logger.init('[OpenList外网链接] 检测到 OpenList 页面');
 
         try {
             const configManager = new ConfigManager();
