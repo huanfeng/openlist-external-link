@@ -3,14 +3,18 @@
 // @namespace    http://tampermonkey.net/
 // @version      1.0
 // @description  为 OpenList 右键菜单添加复制外网链接功能
-// @author       You
-// @match        http*://*.develop.server/*
+// @author       huanfeng
+// @homepage     https://github.com/huanfeng/openlist-external-link
+// @homepageURL     https://github.com/huanfeng/openlist-external-link
+// @license      MIT
+// @match        https://*/*
+// @match        http://*/*
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @run-at       document-idle
 // ==/UserScript==
 
-(function() {
+(function () {
     'use strict';
 
     // 调试开关 - 设置为 true 开启详细日志
@@ -141,7 +145,7 @@
                     mutation.addedNodes.forEach((node) => {
                         if (node.nodeType === Node.ELEMENT_NODE) {
                             const contextMenu = node.querySelector('.solid-contextmenu') ||
-                                              (node.classList && node.classList.contains('solid-contextmenu') ? node : null);
+                                (node.classList && node.classList.contains('solid-contextmenu') ? node : null);
 
                             if (contextMenu) {
                                 logger.log('[OpenList外网链接] 检测到右键菜单出现');
