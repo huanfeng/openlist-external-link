@@ -32,6 +32,9 @@
     class ConfigManager {
         constructor() {
             this.configKey = 'openlist_domain_mappings';
+            this.positionKey = 'openlist_config_button_position';
+            this.historyKey = 'openlist_link_history';
+            this.settingsKey = 'openlist_settings';
         }
 
         // 获取域名映射配置
@@ -43,6 +46,78 @@
         // 保存域名映射配置
         saveDomainMappings(mappings) {
             GM_setValue(this.configKey, JSON.stringify(mappings));
+        }
+
+        // 获取配置按钮位置
+        getButtonPosition() {
+            const position = GM_getValue(this.positionKey, '{"top":80,"right":20,"edge":"right"}');
+            return JSON.parse(position);
+        }
+
+        // 保存配置按钮位置
+        saveButtonPosition(position) {
+            GM_setValue(this.positionKey, JSON.stringify(position));
+        }
+
+        // 获取链接历史记录
+        getLinkHistory() {
+            const history = GM_getValue(this.historyKey, '[]');
+            return JSON.parse(history);
+        }
+
+        // 保存链接历史记录
+        saveLinkHistory(history) {
+            GM_setValue(this.historyKey, JSON.stringify(history));
+        }
+
+        // 添加链接到历史记录
+        addLinkToHistory(url, originalUrl) {
+            const history = this.getLinkHistory();
+            const newItem = {
+                id: Date.now().toString(),
+                url: url,
+                originalUrl: originalUrl,
+                timestamp: Date.now()
+            };
+
+            // 避免重复添加相同的链接
+            const exists = history.find(item => item.url === url);
+            if (exists) {
+                return;
+            }
+
+            history.unshift(newItem);
+
+            // 限制历史记录数量
+            const maxHistory = this.getSettings().maxHistory || 50;
+            if (history.length > maxHistory) {
+                history.splice(maxHistory);
+            }
+
+            this.saveLinkHistory(history);
+        }
+
+        // 删除历史记录
+        removeLinkFromHistory(id) {
+            const history = this.getLinkHistory();
+            const filtered = history.filter(item => item.id !== id);
+            this.saveLinkHistory(filtered);
+        }
+
+        // 清空历史记录
+        clearLinkHistory() {
+            this.saveLinkHistory([]);
+        }
+
+        // 获取设置
+        getSettings() {
+            const settings = GM_getValue(this.settingsKey, '{"maxHistory":50}');
+            return JSON.parse(settings);
+        }
+
+        // 保存设置
+        saveSettings(settings) {
+            GM_setValue(this.settingsKey, JSON.stringify(settings));
         }
 
         // 添加域名映射
@@ -283,6 +358,9 @@
                 // 使用降级方案复制（因为 clipboard API 可能不可用）
                 this.fallbackCopyToClipboard(externalUrl);
 
+                // 添加到历史记录
+                this.configManager.addLinkToHistory(externalUrl, this.currentFileUrl);
+
                 // 关闭右键菜单
                 this.closeContextMenu();
             } else {
@@ -340,43 +418,153 @@
 
             const configButton = document.createElement('div');
             configButton.id = 'openlist-config-button';
-            configButton.style.cssText = `
-                position: fixed;
-                top: 80px;
-                right: 20px;
-                width: 40px;
-                height: 40px;
-                background: #2196F3;
-                border-radius: 50%;
-                cursor: pointer;
-                z-index: 99999;
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                color: white;
-                font-size: 18px;
-                box-shadow: 0 2px 8px rgba(0,0,0,0.2);
-                transition: background 0.3s;
-            `;
 
+            // 从存储中读取位置
+            const savedPosition = this.configManager.getButtonPosition();
+            const buttonSize = 40;
+            const snapDistance = 30; // 贴边距离阈值
+
+            // 设置初始样式
+            const updateButtonPosition = (pos) => {
+                configButton.style.cssText = `
+                    position: fixed;
+                    width: ${buttonSize}px;
+                    height: ${buttonSize}px;
+                    background: #2196F3;
+                    border-radius: 50%;
+                    cursor: move;
+                    z-index: 99999;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    color: white;
+                    font-size: 18px;
+                    box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+                    transition: background 0.3s;
+                    user-select: none;
+                `;
+
+                // 根据贴边位置设置坐标
+                if (pos.edge === 'left') {
+                    configButton.style.left = '20px';
+                    configButton.style.top = pos.top + 'px';
+                    configButton.style.right = 'auto';
+                } else {
+                    configButton.style.right = '20px';
+                    configButton.style.top = pos.top + 'px';
+                    configButton.style.left = 'auto';
+                }
+            };
+
+            updateButtonPosition(savedPosition);
             configButton.innerHTML = '⚙️';
-            configButton.title = '配置外网域名映射';
+            configButton.title = '配置外网域名映射（可拖动）';
+
+            // 拖动功能
+            let isDragging = false;
+            let startX, startY;
+            let startButtonX, startButtonY;
+
+            const onMouseDown = (e) => {
+                if (e.button !== 0) return; // 只响应左键
+                isDragging = true;
+                startX = e.clientX;
+                startY = e.clientY;
+
+                const rect = configButton.getBoundingClientRect();
+                startButtonX = rect.left;
+                startButtonY = rect.top;
+
+                configButton.style.cursor = 'grabbing';
+                configButton.style.transition = 'none'; // 拖动时禁用过渡
+                e.preventDefault();
+            };
+
+            const onMouseMove = (e) => {
+                if (!isDragging) return;
+
+                const deltaX = e.clientX - startX;
+                const deltaY = e.clientY - startY;
+
+                let newX = startButtonX + deltaX;
+                let newY = startButtonY + deltaY;
+
+                // 限制在视窗内
+                newX = Math.max(0, Math.min(newX, window.innerWidth - buttonSize));
+                newY = Math.max(0, Math.min(newY, window.innerHeight - buttonSize));
+
+                // 临时设置位置（不贴边）
+                configButton.style.left = newX + 'px';
+                configButton.style.top = newY + 'px';
+                configButton.style.right = 'auto';
+
+                e.preventDefault();
+            };
+
+            const onMouseUp = (e) => {
+                if (!isDragging) return;
+                isDragging = false;
+
+                configButton.style.cursor = 'move';
+                configButton.style.transition = 'all 0.3s ease';
+
+                const rect = configButton.getBoundingClientRect();
+                const centerX = rect.left + buttonSize / 2;
+                const centerY = rect.top + buttonSize / 2;
+
+                // 判断贴边
+                let edge = 'right';
+                let finalTop = centerY - buttonSize / 2;
+
+                if (centerX < window.innerWidth / 2) {
+                    edge = 'left';
+                }
+
+                // 限制top值在合理范围
+                finalTop = Math.max(20, Math.min(finalTop, window.innerHeight - buttonSize - 20));
+
+                // 保存位置
+                const position = {
+                    top: Math.round(finalTop),
+                    edge: edge
+                };
+                this.configManager.saveButtonPosition(position);
+
+                // 应用贴边位置
+                updateButtonPosition(position);
+
+                // 判断是否为点击（移动距离很小）
+                const moveDistance = Math.sqrt(
+                    Math.pow(e.clientX - startX, 2) + Math.pow(e.clientY - startY, 2)
+                );
+
+                if (moveDistance < 5) {
+                    // 视为点击
+                    logger.log('[OpenList外网链接] 配置按钮被点击');
+                    this.showConfigDialog();
+                }
+
+                e.preventDefault();
+            };
+
+            configButton.addEventListener('mousedown', onMouseDown);
+            document.addEventListener('mousemove', onMouseMove);
+            document.addEventListener('mouseup', onMouseUp);
 
             configButton.addEventListener('mouseover', () => {
-                configButton.style.background = '#1976D2';
+                if (!isDragging) {
+                    configButton.style.background = '#1976D2';
+                }
             });
 
             configButton.addEventListener('mouseout', () => {
-                configButton.style.background = '#2196F3';
-            });
-
-            configButton.addEventListener('click', () => {
-                logger.log('[OpenList外网链接] 配置按钮被点击');
-                this.showConfigDialog();
+                if (!isDragging) {
+                    configButton.style.background = '#2196F3';
+                }
             });
 
             document.body.appendChild(configButton);
-            logger.log('[OpenList外网链接] 配置按钮已添加到页面，位置: top:80px, right:20px');
+            logger.log('[OpenList外网链接] 配置按钮已添加到页面');
         }
 
         // 显示配置对话框
@@ -391,21 +579,23 @@
         constructor(configManager) {
             this.configManager = configManager;
             this.dialog = null;
+            this.overlay = null;
+            this.currentTab = 'mappings'; // 'mappings' or 'history'
         }
 
         show() {
-            if (this.dialog) {
-                this.dialog.remove();
+            if (this.overlay) {
+                this.overlay.remove();
             }
 
             this.createDialog();
-            this.loadMappings();
+            this.switchTab('mappings');
         }
 
         createDialog() {
             // 创建遮罩层
-            const overlay = document.createElement('div');
-            overlay.style.cssText = `
+            this.overlay = document.createElement('div');
+            this.overlay.style.cssText = `
                 position: fixed;
                 top: 0;
                 left: 0;
@@ -423,70 +613,147 @@
             this.dialog.style.cssText = `
                 background: white;
                 border-radius: 8px;
-                width: 600px;
+                width: 700px;
                 max-width: 90vw;
                 max-height: 80vh;
                 overflow: hidden;
                 box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+                display: flex;
+                flex-direction: column;
             `;
 
             this.dialog.innerHTML = `
                 <div style="padding: 20px; border-bottom: 1px solid #eee;">
-                    <h2 style="margin: 0; color: #333;">域名映射配置</h2>
-                </div>
-                <div style="padding: 20px; max-height: 400px; overflow-y: auto;">
-                    <div style="margin-bottom: 20px;">
-                        <div style="display: flex; gap: 10px; margin-bottom: 10px;">
-                            <input type="text" id="internal-domain" placeholder="内网域名 (如: http://fileserver.local)"
-                                   style="flex: 1; padding: 8px; border: 1px solid #ddd; border-radius: 4px;">
-                            <input type="text" id="external-domain" placeholder="外网域名 (如: https://file.myserver.com)"
-                                   style="flex: 1; padding: 8px; border: 1px solid #ddd; border-radius: 4px;">
-                            <button id="add-mapping" style="padding: 8px 16px; background: #4caf50; color: white; border: none; border-radius: 4px; cursor: pointer;">添加</button>
-                        </div>
-                        <div style="font-size: 12px; color: #666;">
-                            示例：内网域名 http://fileserver.local → 外网域名 https://file.myserver.com
-                        </div>
+                    <h2 style="margin: 0; color: #333;">外网链接增强设置</h2>
+                    <div style="display: flex; gap: 10px; margin-top: 15px;">
+                        <button id="tab-mappings" style="padding: 8px 16px; background: #2196F3; color: white; border: none; border-radius: 4px; cursor: pointer;">域名映射</button>
+                        <button id="tab-history" style="padding: 8px 16px; background: #ddd; color: #666; border: none; border-radius: 4px; cursor: pointer;">历史记录</button>
                     </div>
-                    <div id="mappings-list"></div>
+                </div>
+                <div id="tab-content" style="padding: 20px; max-height: 450px; overflow-y: auto; flex: 1;">
+                    <!-- 动态内容 -->
                 </div>
                 <div style="padding: 20px; border-top: 1px solid #eee; text-align: right;">
                     <button id="close-dialog" style="padding: 8px 16px; background: #666; color: white; border: none; border-radius: 4px; cursor: pointer;">关闭</button>
                 </div>
             `;
 
-            overlay.appendChild(this.dialog);
-            document.body.appendChild(overlay);
+            this.overlay.appendChild(this.dialog);
+            document.body.appendChild(this.overlay);
 
             // 绑定事件
-            this.bindEvents(overlay);
+            this.bindEvents();
         }
 
-        bindEvents(overlay) {
-            // 添加映射
-            this.dialog.querySelector('#add-mapping').addEventListener('click', () => {
-                this.addMapping();
+        bindEvents() {
+            // 切换标签
+            this.dialog.querySelector('#tab-mappings').addEventListener('click', () => {
+                this.switchTab('mappings');
+            });
+
+            this.dialog.querySelector('#tab-history').addEventListener('click', () => {
+                this.switchTab('history');
             });
 
             // 关闭对话框
             this.dialog.querySelector('#close-dialog').addEventListener('click', () => {
-                overlay.remove();
+                this.overlay.remove();
             });
 
             // 点击遮罩层关闭
-            overlay.addEventListener('click', (e) => {
-                if (e.target === overlay) {
-                    overlay.remove();
+            this.overlay.addEventListener('click', (e) => {
+                if (e.target === this.overlay) {
+                    this.overlay.remove();
                 }
             });
+        }
 
-            // 回车添加
+        switchTab(tabName) {
+            this.currentTab = tabName;
+
+            // 更新标签样式
+            const tabMappings = this.dialog.querySelector('#tab-mappings');
+            const tabHistory = this.dialog.querySelector('#tab-history');
+
+            if (tabName === 'mappings') {
+                tabMappings.style.background = '#2196F3';
+                tabMappings.style.color = 'white';
+                tabHistory.style.background = '#ddd';
+                tabHistory.style.color = '#666';
+                this.showMappingsTab();
+            } else {
+                tabHistory.style.background = '#2196F3';
+                tabHistory.style.color = 'white';
+                tabMappings.style.background = '#ddd';
+                tabMappings.style.color = '#666';
+                this.showHistoryTab();
+            }
+        }
+
+        showMappingsTab() {
+            const content = this.dialog.querySelector('#tab-content');
+            content.innerHTML = `
+                <div style="margin-bottom: 20px;">
+                    <div style="display: flex; gap: 10px; margin-bottom: 10px;">
+                        <input type="text" id="internal-domain" placeholder="内网域名 (如: http://fileserver.local)"
+                               style="flex: 1; padding: 8px; border: 1px solid #ddd; border-radius: 4px;">
+                        <input type="text" id="external-domain" placeholder="外网域名 (如: https://file.myserver.com)"
+                               style="flex: 1; padding: 8px; border: 1px solid #ddd; border-radius: 4px;">
+                        <button id="add-mapping" style="padding: 8px 16px; background: #4caf50; color: white; border: none; border-radius: 4px; cursor: pointer;">添加</button>
+                    </div>
+                    <div style="font-size: 12px; color: #666;">
+                        示例：内网域名 http://fileserver.local → 外网域名 https://file.myserver.com
+                    </div>
+                </div>
+                <div id="mappings-list"></div>
+            `;
+
+            // 绑定事件
+            content.querySelector('#add-mapping').addEventListener('click', () => {
+                this.addMapping();
+            });
+
             ['#internal-domain', '#external-domain'].forEach(selector => {
-                this.dialog.querySelector(selector).addEventListener('keypress', (e) => {
+                content.querySelector(selector).addEventListener('keypress', (e) => {
                     if (e.key === 'Enter') {
                         this.addMapping();
                     }
                 });
             });
+
+            this.loadMappings();
+        }
+
+        showHistoryTab() {
+            const content = this.dialog.querySelector('#tab-content');
+            const settings = this.configManager.getSettings();
+
+            content.innerHTML = `
+                <div style="margin-bottom: 20px;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                        <div>
+                            <label style="color: #666; margin-right: 10px;">最大历史记录数:</label>
+                            <input type="number" id="max-history" value="${settings.maxHistory || 50}"
+                                   min="10" max="500" step="10"
+                                   style="width: 80px; padding: 6px; border: 1px solid #ddd; border-radius: 4px;">
+                            <button id="save-settings" style="margin-left: 10px; padding: 6px 12px; background: #4caf50; color: white; border: none; border-radius: 4px; cursor: pointer;">保存</button>
+                        </div>
+                        <button id="clear-history" style="padding: 6px 12px; background: #f44336; color: white; border: none; border-radius: 4px; cursor: pointer;">清空历史</button>
+                    </div>
+                </div>
+                <div id="history-list"></div>
+            `;
+
+            // 绑定事件
+            content.querySelector('#save-settings').addEventListener('click', () => {
+                this.saveSettings();
+            });
+
+            content.querySelector('#clear-history').addEventListener('click', () => {
+                this.clearHistory();
+            });
+
+            this.loadHistory();
         }
 
         addMapping() {
@@ -515,23 +782,35 @@
                 return;
             }
 
+            // 转义 HTML 特殊字符
+            const escapeHtml = (text) => {
+                const div = document.createElement('div');
+                div.textContent = text;
+                return div.innerHTML;
+            };
+
             listContainer.innerHTML = mappings.map(mapping => `
-                <div style="border: 1px solid #eee; border-radius: 4px; padding: 15px; margin-bottom: 10px;">
+                <div class="mapping-item" data-id="${mapping.id}" style="border: 1px solid #eee; border-radius: 4px; padding: 15px; margin-bottom: 10px;">
                     <div style="display: flex; justify-content: between; align-items: center;">
                         <div style="flex: 1;">
-                            <div style="font-weight: bold; margin-bottom: 5px;">内网: ${mapping.internalDomain}</div>
-                            <div style="color: #666;">外网: ${mapping.externalDomain}</div>
+                            <div style="font-weight: bold; margin-bottom: 5px;">内网: ${escapeHtml(mapping.internalDomain)}</div>
+                            <div style="color: #666;">外网: ${escapeHtml(mapping.externalDomain)}</div>
                         </div>
                         <div>
-                            <button onclick="configDialog.removeMapping('${mapping.id}')"
+                            <button class="delete-mapping-btn"
                                     style="padding: 4px 8px; background: #f44336; color: white; border: none; border-radius: 4px; cursor: pointer; margin-left: 5px;">删除</button>
                         </div>
                     </div>
                 </div>
             `).join('');
 
-            // 临时保存引用以供全局调用
-            window.configDialog = this;
+            // 使用事件委托绑定删除按钮
+            listContainer.querySelectorAll('.mapping-item').forEach(itemDiv => {
+                const mappingId = itemDiv.dataset.id;
+                itemDiv.querySelector('.delete-mapping-btn').addEventListener('click', () => {
+                    this.removeMapping(mappingId);
+                });
+            });
         }
 
         removeMapping(id) {
@@ -539,6 +818,131 @@
                 this.configManager.removeMapping(id);
                 this.loadMappings();
             }
+        }
+
+        loadHistory() {
+            const history = this.configManager.getLinkHistory();
+            const listContainer = this.dialog.querySelector('#history-list');
+
+            if (history.length === 0) {
+                listContainer.innerHTML = '<div style="text-align: center; color: #666; padding: 20px;">暂无历史记录</div>';
+                return;
+            }
+
+            // 使用安全的 HTML，避免字符串拼接导致的注入问题
+            listContainer.innerHTML = history.map(item => {
+                const date = new Date(item.timestamp);
+                const dateStr = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')} ${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+
+                // 转义 HTML 特殊字符
+                const escapeHtml = (text) => {
+                    const div = document.createElement('div');
+                    div.textContent = text;
+                    return div.innerHTML;
+                };
+
+                return `
+                    <div class="history-item" data-id="${item.id}" style="border: 1px solid #eee; border-radius: 4px; padding: 12px; margin-bottom: 10px;">
+                        <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 10px;">
+                            <div style="flex: 1; min-width: 0;">
+                                <div style="font-size: 12px; color: #999; margin-bottom: 5px;">${dateStr}</div>
+                                <div style="word-break: break-all; margin-bottom: 5px; color: #333;">
+                                    <strong>外网:</strong> ${escapeHtml(item.url)}
+                                </div>
+                                <div style="word-break: break-all; font-size: 12px; color: #666;">
+                                    <strong>原始:</strong> ${escapeHtml(item.originalUrl)}
+                                </div>
+                            </div>
+                            <div style="display: flex; gap: 5px; flex-shrink: 0;">
+                                <button class="copy-history-btn"
+                                        style="padding: 4px 8px; background: #4caf50; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px;">复制</button>
+                                <button class="delete-history-btn"
+                                        style="padding: 4px 8px; background: #f44336; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px;">删除</button>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+
+            // 使用事件委托绑定按钮事件
+            listContainer.querySelectorAll('.history-item').forEach(itemDiv => {
+                const itemId = itemDiv.dataset.id;
+                const historyItem = history.find(h => h.id === itemId);
+
+                if (historyItem) {
+                    // 复制按钮
+                    itemDiv.querySelector('.copy-history-btn').addEventListener('click', () => {
+                        this.copyHistoryLink(historyItem.url);
+                    });
+
+                    // 删除按钮
+                    itemDiv.querySelector('.delete-history-btn').addEventListener('click', () => {
+                        this.removeHistoryItem(historyItem.id);
+                    });
+                }
+            });
+        }
+
+        copyHistoryLink(url) {
+            const textArea = document.createElement('textarea');
+            textArea.value = url;
+            document.body.appendChild(textArea);
+            textArea.select();
+            document.execCommand('copy');
+            document.body.removeChild(textArea);
+
+            // 显示提示
+            this.showMiniNotification('链接已复制');
+        }
+
+        removeHistoryItem(id) {
+            if (confirm('确定要删除这条历史记录吗？')) {
+                this.configManager.removeLinkFromHistory(id);
+                this.loadHistory();
+            }
+        }
+
+        clearHistory() {
+            if (confirm('确定要清空所有历史记录吗？此操作不可恢复！')) {
+                this.configManager.clearLinkHistory();
+                this.loadHistory();
+            }
+        }
+
+        saveSettings() {
+            const maxHistory = parseInt(this.dialog.querySelector('#max-history').value);
+            if (isNaN(maxHistory) || maxHistory < 10 || maxHistory > 500) {
+                alert('请输入有效的数字 (10-500)');
+                return;
+            }
+
+            const settings = this.configManager.getSettings();
+            settings.maxHistory = maxHistory;
+            this.configManager.saveSettings(settings);
+
+            this.showMiniNotification('设置已保存');
+        }
+
+        showMiniNotification(message) {
+            const notification = document.createElement('div');
+            notification.style.cssText = `
+                position: fixed;
+                top: 50%;
+                left: 50%;
+                transform: translate(-50%, -50%);
+                background: rgba(0, 0, 0, 0.8);
+                color: white;
+                padding: 12px 24px;
+                border-radius: 4px;
+                z-index: 10001;
+                font-size: 14px;
+            `;
+            notification.textContent = message;
+            document.body.appendChild(notification);
+
+            setTimeout(() => {
+                document.body.removeChild(notification);
+            }, 1500);
         }
     }
 
