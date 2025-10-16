@@ -178,6 +178,13 @@
             const mappings = this.configManager.getDomainMappings();
             return mappings.some(m => m.enabled);
         }
+
+        // 检查当前页面是否配置了域名映射
+        hasCurrentPageMapping() {
+            const currentOrigin = window.location.origin;
+            const mappings = this.configManager.getDomainMappings();
+            return mappings.some(m => m.enabled && currentOrigin.startsWith(m.internalDomain));
+        }
     }
 
     // 菜单增强器
@@ -193,9 +200,16 @@
         // 初始化
         init() {
             logger.init('[OpenList外网链接] MenuEnhancer 初始化开始');
-            this.setupContextMenuListener();
-            this.observeMenuChanges();
-            logger.init('[OpenList外网链接] 右键菜单监听器已设置');
+
+            // 检查是否配置了当前页面的映射
+            if (this.urlConverter.hasCurrentPageMapping()) {
+                this.setupContextMenuListener();
+                this.observeMenuChanges();
+                logger.init('[OpenList外网链接] 右键菜单监听器已设置');
+            } else {
+                logger.init('[OpenList外网链接] 当前页面未配置域名映射，跳过右键菜单补丁');
+            }
+
             this.addConfigButton();
             logger.init('[OpenList外网链接] 配置按钮已添加');
         }
@@ -333,9 +347,12 @@
 
             // 添加点击事件
             menuItem.addEventListener('click', (e) => {
-                e.preventDefault();
-                e.stopPropagation();
                 this.handleExternalLinkCopy();
+
+                // 延迟关闭菜单，确保复制操作完成
+                setTimeout(() => {
+                    this.closeContextMenu();
+                }, 10);
             });
 
             return menuItem;
@@ -360,9 +377,6 @@
 
                 // 添加到历史记录
                 this.configManager.addLinkToHistory(externalUrl, this.currentFileUrl);
-
-                // 关闭右键菜单
-                this.closeContextMenu();
             } else {
                 alert('无法获取文件链接，请重试');
             }
@@ -370,12 +384,38 @@
 
         // 关闭右键菜单
         closeContextMenu() {
-            const contextMenu = document.querySelector('.solid-contextmenu');
-            if (contextMenu) {
-                // 移除菜单元素
-                contextMenu.remove();
-                logger.log('[OpenList外网链接] 已关闭右键菜单');
-            }
+            // 模拟点击事件来关闭菜单
+            setTimeout(() => {
+                const contextMenu = document.querySelector('.solid-contextmenu');
+                if (contextMenu) {
+                    // 在 body 上触发完整的点击事件序列
+                    const mousedown = new MouseEvent('mousedown', {
+                        bubbles: true,
+                        cancelable: true,
+                        clientX: 0,
+                        clientY: 0
+                    });
+                    document.body.dispatchEvent(mousedown);
+
+                    setTimeout(() => {
+                        const mouseup = new MouseEvent('mouseup', {
+                            bubbles: true,
+                            cancelable: true,
+                            clientX: 0,
+                            clientY: 0
+                        });
+                        document.body.dispatchEvent(mouseup);
+
+                        const click = new MouseEvent('click', {
+                            bubbles: true,
+                            cancelable: true,
+                            clientX: 0,
+                            clientY: 0
+                        });
+                        document.body.dispatchEvent(click);
+                    }, 10);
+                }
+            }, 50);
         }
 
         // 降级复制方案
@@ -422,7 +462,6 @@
             // 从存储中读取位置
             const savedPosition = this.configManager.getButtonPosition();
             const buttonSize = 40;
-            const snapDistance = 30; // 贴边距离阈值
 
             // 设置初始样式
             const updateButtonPosition = (pos) => {
