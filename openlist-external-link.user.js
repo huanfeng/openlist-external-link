@@ -37,6 +37,17 @@
             this.settingsKey = 'openlist_settings';
         }
 
+        // 规范化域名 - 统一处理带/不带/的情况
+        normalizeDomain(domain) {
+            if (!domain) return '';
+            domain = domain.trim();
+            // 移除末尾的 /
+            while (domain.endsWith('/')) {
+                domain = domain.slice(0, -1);
+            }
+            return domain;
+        }
+
         // 获取域名映射配置
         getDomainMappings() {
             const config = GM_getValue(this.configKey, '[]');
@@ -120,13 +131,33 @@
             GM_setValue(this.settingsKey, JSON.stringify(settings));
         }
 
+        // 检查域名是否已存在
+        isDomainExists(internalDomain, excludeId = null) {
+            const mappings = this.getDomainMappings();
+            const normalizedDomain = this.normalizeDomain(internalDomain);
+            return mappings.some(m => {
+                if (excludeId && m.id === excludeId) {
+                    return false; // 排除指定ID（用于编辑时）
+                }
+                return this.normalizeDomain(m.internalDomain) === normalizedDomain;
+            });
+        }
+
         // 添加域名映射
         addMapping(internalDomain, externalDomain) {
+            const normalizedInternal = this.normalizeDomain(internalDomain);
+            const normalizedExternal = this.normalizeDomain(externalDomain);
+
+            // 检查是否已存在相同的内网域名
+            if (this.isDomainExists(normalizedInternal)) {
+                throw new Error('该内网域名已存在，请勿重复添加');
+            }
+
             const mappings = this.getDomainMappings();
             const newMapping = {
                 id: Date.now().toString(),
-                internalDomain: internalDomain.trim(),
-                externalDomain: externalDomain.trim(),
+                internalDomain: normalizedInternal,
+                externalDomain: normalizedExternal,
                 enabled: true
             };
             mappings.push(newMapping);
@@ -143,11 +174,19 @@
 
         // 更新域名映射
         updateMapping(id, internalDomain, externalDomain, enabled = true) {
+            const normalizedInternal = this.normalizeDomain(internalDomain);
+            const normalizedExternal = this.normalizeDomain(externalDomain);
+
+            // 检查是否与其他映射冲突（排除自身）
+            if (this.isDomainExists(normalizedInternal, id)) {
+                throw new Error('该内网域名已被其他映射使用');
+            }
+
             const mappings = this.getDomainMappings();
             const mapping = mappings.find(m => m.id === id);
             if (mapping) {
-                mapping.internalDomain = internalDomain.trim();
-                mapping.externalDomain = externalDomain.trim();
+                mapping.internalDomain = normalizedInternal;
+                mapping.externalDomain = normalizedExternal;
                 mapping.enabled = enabled;
                 this.saveDomainMappings(mappings);
             }
@@ -733,6 +772,7 @@
             const content = this.dialog.querySelector('#tab-content');
             content.innerHTML = `
                 <div style="margin-bottom: 20px;">
+                    <h3 style="margin: 0 0 10px 0; color: #333; font-size: 16px;">添加域名映射</h3>
                     <div style="display: flex; gap: 10px; margin-bottom: 10px;">
                         <input type="text" id="internal-domain" placeholder="内网域名 (如: http://fileserver.local)"
                                style="flex: 1; padding: 8px; border: 1px solid #ddd; border-radius: 4px;">
@@ -744,6 +784,27 @@
                         示例：内网域名 http://fileserver.local → 外网域名 https://file.myserver.com
                     </div>
                 </div>
+
+                <div style="margin-bottom: 20px; padding: 15px; background: #f5f5f5; border-radius: 4px;">
+                    <h3 style="margin: 0 0 10px 0; color: #333; font-size: 16px;">链接测试</h3>
+                    <div style="margin-bottom: 10px;">
+                        <input type="text" id="test-url" placeholder="输入要测试的内网链接 (如: http://fileserver.local/d/path/file.txt)"
+                               style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; margin-bottom: 10px;">
+                        <button id="test-convert" style="padding: 8px 16px; background: #2196F3; color: white; border: none; border-radius: 4px; cursor: pointer;">测试转换</button>
+                    </div>
+                    <div id="test-result" style="display: none; margin-top: 10px; padding: 10px; background: white; border-radius: 4px; border: 1px solid #ddd;">
+                        <div style="margin-bottom: 8px;">
+                            <strong>原始链接:</strong>
+                            <div id="test-original" style="color: #666; word-break: break-all; margin-top: 4px;"></div>
+                        </div>
+                        <div>
+                            <strong>转换后链接:</strong>
+                            <div id="test-converted" style="color: #2196F3; word-break: break-all; margin-top: 4px;"></div>
+                        </div>
+                        <div id="test-match-info" style="margin-top: 8px; font-size: 12px; color: #666;"></div>
+                    </div>
+                </div>
+
                 <div id="mappings-list"></div>
             `;
 
@@ -760,7 +821,67 @@
                 });
             });
 
+            // 绑定测试按钮事件
+            content.querySelector('#test-convert').addEventListener('click', () => {
+                this.testUrlConvert();
+            });
+
+            content.querySelector('#test-url').addEventListener('keypress', (e) => {
+                if (e.key === 'Enter') {
+                    this.testUrlConvert();
+                }
+            });
+
             this.loadMappings();
+        }
+
+        // 测试URL转换
+        testUrlConvert() {
+            const testUrl = this.dialog.querySelector('#test-url').value.trim();
+            const testResult = this.dialog.querySelector('#test-result');
+            const testOriginal = this.dialog.querySelector('#test-original');
+            const testConverted = this.dialog.querySelector('#test-converted');
+            const testMatchInfo = this.dialog.querySelector('#test-match-info');
+
+            if (!testUrl) {
+                alert('请输入要测试的链接');
+                return;
+            }
+
+            // 使用 UrlConverter 进行转换
+            const urlConverter = new UrlConverter(this.configManager);
+            const convertedUrl = urlConverter.convertToExternalUrl(testUrl);
+
+            // 显示结果
+            testOriginal.textContent = testUrl;
+            testConverted.textContent = convertedUrl;
+
+            // 检查是否匹配到映射
+            const mappings = this.configManager.getDomainMappings();
+            let matchedMapping = null;
+            for (const mapping of mappings) {
+                if (mapping.enabled && testUrl.startsWith(mapping.internalDomain)) {
+                    matchedMapping = mapping;
+                    break;
+                }
+            }
+
+            if (matchedMapping) {
+                testMatchInfo.innerHTML = `<span style="color: #4caf50;">✓ 匹配到映射规则:</span> ${this.escapeHtml(matchedMapping.internalDomain)} → ${this.escapeHtml(matchedMapping.externalDomain)}`;
+                testConverted.style.color = '#4caf50';
+            } else {
+                testMatchInfo.innerHTML = '<span style="color: #ff9800;">⚠ 未匹配到任何映射规则，返回原始链接</span>';
+                testConverted.style.color = '#ff9800';
+            }
+
+            testResult.style.display = 'block';
+        }
+
+        // HTML转义工具函数
+        escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
         }
 
         showHistoryTab() {
@@ -804,12 +925,17 @@
                 return;
             }
 
-            this.configManager.addMapping(internalDomain, externalDomain);
-            this.loadMappings();
+            try {
+                this.configManager.addMapping(internalDomain, externalDomain);
+                this.loadMappings();
 
-            // 清空输入框
-            this.dialog.querySelector('#internal-domain').value = '';
-            this.dialog.querySelector('#external-domain').value = '';
+                // 清空输入框
+                this.dialog.querySelector('#internal-domain').value = '';
+                this.dialog.querySelector('#external-domain').value = '';
+                this.showMiniNotification('域名映射已添加');
+            } catch (error) {
+                alert(error.message);
+            }
         }
 
         loadMappings() {
@@ -821,35 +947,116 @@
                 return;
             }
 
-            // 转义 HTML 特殊字符
-            const escapeHtml = (text) => {
-                const div = document.createElement('div');
-                div.textContent = text;
-                return div.innerHTML;
-            };
-
-            listContainer.innerHTML = mappings.map(mapping => `
-                <div class="mapping-item" data-id="${mapping.id}" style="border: 1px solid #eee; border-radius: 4px; padding: 15px; margin-bottom: 10px;">
-                    <div style="display: flex; justify-content: between; align-items: center;">
-                        <div style="flex: 1;">
-                            <div style="font-weight: bold; margin-bottom: 5px;">内网: ${escapeHtml(mapping.internalDomain)}</div>
-                            <div style="color: #666;">外网: ${escapeHtml(mapping.externalDomain)}</div>
-                        </div>
-                        <div>
-                            <button class="delete-mapping-btn"
-                                    style="padding: 4px 8px; background: #f44336; color: white; border: none; border-radius: 4px; cursor: pointer; margin-left: 5px;">删除</button>
+            listContainer.innerHTML = mappings.map(mapping => {
+                const escapedInternal = this.escapeHtml(mapping.internalDomain);
+                const escapedExternal = this.escapeHtml(mapping.externalDomain);
+                return `
+                    <div class="mapping-item" data-id="${mapping.id}" style="border: 1px solid #eee; border-radius: 4px; padding: 15px; margin-bottom: 10px;">
+                        <div style="display: flex; justify-content: between; align-items: center;">
+                            <div style="flex: 1;">
+                                <div class="mapping-display-${mapping.id}">
+                                    <div style="font-weight: bold; margin-bottom: 5px;">内网: ${escapedInternal}</div>
+                                    <div style="color: #666;">外网: ${escapedExternal}</div>
+                                </div>
+                                <div class="mapping-edit-${mapping.id}" style="display: none;">
+                                    <input type="text" class="edit-internal" value="${escapedInternal}"
+                                           style="width: 100%; padding: 6px; border: 1px solid #ddd; border-radius: 4px; margin-bottom: 5px;">
+                                    <input type="text" class="edit-external" value="${escapedExternal}"
+                                           style="width: 100%; padding: 6px; border: 1px solid #ddd; border-radius: 4px;">
+                                </div>
+                            </div>
+                            <div>
+                                <button class="edit-mapping-btn"
+                                        style="padding: 4px 8px; background: #2196F3; color: white; border: none; border-radius: 4px; cursor: pointer; margin-left: 5px;">编辑</button>
+                                <button class="save-mapping-btn" style="display: none; padding: 4px 8px; background: #4caf50; color: white; border: none; border-radius: 4px; cursor: pointer; margin-left: 5px;">保存</button>
+                                <button class="cancel-edit-btn" style="display: none; padding: 4px 8px; background: #999; color: white; border: none; border-radius: 4px; cursor: pointer; margin-left: 5px;">取消</button>
+                                <button class="delete-mapping-btn"
+                                        style="padding: 4px 8px; background: #f44336; color: white; border: none; border-radius: 4px; cursor: pointer; margin-left: 5px;">删除</button>
+                            </div>
                         </div>
                     </div>
-                </div>
-            `).join('');
+                `;
+            }).join('');
 
-            // 使用事件委托绑定删除按钮
+            // 使用事件委托绑定按钮事件
             listContainer.querySelectorAll('.mapping-item').forEach(itemDiv => {
                 const mappingId = itemDiv.dataset.id;
+                const mapping = mappings.find(m => m.id === mappingId);
+
+                // 编辑按钮
+                itemDiv.querySelector('.edit-mapping-btn').addEventListener('click', () => {
+                    this.enterEditMode(mappingId);
+                });
+
+                // 保存按钮
+                itemDiv.querySelector('.save-mapping-btn').addEventListener('click', () => {
+                    this.saveMapping(mappingId);
+                });
+
+                // 取消按钮
+                itemDiv.querySelector('.cancel-edit-btn').addEventListener('click', () => {
+                    this.exitEditMode(mappingId);
+                });
+
+                // 删除按钮
                 itemDiv.querySelector('.delete-mapping-btn').addEventListener('click', () => {
                     this.removeMapping(mappingId);
                 });
             });
+        }
+
+        // 进入编辑模式
+        enterEditMode(id) {
+            const displayDiv = this.dialog.querySelector(`.mapping-display-${id}`);
+            const editDiv = this.dialog.querySelector(`.mapping-edit-${id}`);
+            const item = this.dialog.querySelector(`[data-id="${id}"]`);
+
+            displayDiv.style.display = 'none';
+            editDiv.style.display = 'block';
+
+            item.querySelector('.edit-mapping-btn').style.display = 'none';
+            item.querySelector('.save-mapping-btn').style.display = 'inline-block';
+            item.querySelector('.cancel-edit-btn').style.display = 'inline-block';
+            item.querySelector('.delete-mapping-btn').style.display = 'none';
+        }
+
+        // 退出编辑模式
+        exitEditMode(id) {
+            const displayDiv = this.dialog.querySelector(`.mapping-display-${id}`);
+            const editDiv = this.dialog.querySelector(`.mapping-edit-${id}`);
+            const item = this.dialog.querySelector(`[data-id="${id}"]`);
+
+            displayDiv.style.display = 'block';
+            editDiv.style.display = 'none';
+
+            item.querySelector('.edit-mapping-btn').style.display = 'inline-block';
+            item.querySelector('.save-mapping-btn').style.display = 'none';
+            item.querySelector('.cancel-edit-btn').style.display = 'none';
+            item.querySelector('.delete-mapping-btn').style.display = 'inline-block';
+
+            // 恢复原始值
+            this.loadMappings();
+        }
+
+        // 保存编辑
+        saveMapping(id) {
+            const item = this.dialog.querySelector(`[data-id="${id}"]`);
+            const editDiv = this.dialog.querySelector(`.mapping-edit-${id}`);
+            const internalDomain = editDiv.querySelector('.edit-internal').value.trim();
+            const externalDomain = editDiv.querySelector('.edit-external').value.trim();
+
+            if (!internalDomain || !externalDomain) {
+                alert('请填写完整的域名信息');
+                return;
+            }
+
+            try {
+                this.configManager.updateMapping(id, internalDomain, externalDomain);
+                this.loadMappings();
+                this.showMiniNotification('域名映射已更新');
+            } catch (error) {
+                alert(error.message);
+            }
         }
 
         removeMapping(id) {
@@ -873,23 +1080,16 @@
                 const date = new Date(item.timestamp);
                 const dateStr = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')} ${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
 
-                // 转义 HTML 特殊字符
-                const escapeHtml = (text) => {
-                    const div = document.createElement('div');
-                    div.textContent = text;
-                    return div.innerHTML;
-                };
-
                 return `
                     <div class="history-item" data-id="${item.id}" style="border: 1px solid #eee; border-radius: 4px; padding: 12px; margin-bottom: 10px;">
                         <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 10px;">
                             <div style="flex: 1; min-width: 0;">
                                 <div style="font-size: 12px; color: #999; margin-bottom: 5px;">${dateStr}</div>
                                 <div style="word-break: break-all; margin-bottom: 5px; color: #333;">
-                                    <strong>外网:</strong> ${escapeHtml(item.url)}
+                                    <strong>外网:</strong> ${this.escapeHtml(item.url)}
                                 </div>
                                 <div style="word-break: break-all; font-size: 12px; color: #666;">
-                                    <strong>原始:</strong> ${escapeHtml(item.originalUrl)}
+                                    <strong>原始:</strong> ${this.escapeHtml(item.originalUrl)}
                                 </div>
                             </div>
                             <div style="display: flex; gap: 5px; flex-shrink: 0;">
